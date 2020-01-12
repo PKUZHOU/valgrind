@@ -31,7 +31,7 @@
 
 // For cache simulation
 typedef struct {
-   Int size;       // bytes
+   Long size;       // bytes
    Int assoc;
    Int line_size;  // bytes
 } cache_t;

@@ -87,7 +87,7 @@ static void parse_cache_opt ( cache_t* cache, const HChar* opt,
    i3 = VG_(strtoll10)(endptr+1, &endptr); if (*endptr != '\0') goto bad;
 
    // Check for overflow.
-   cache->size      = (Int)i1;
+   cache->size      = (Long)i1;
    cache->assoc     = (Int)i2;
    cache->line_size = (Int)i3;
    if (cache->size      != i1) goto overflow;
