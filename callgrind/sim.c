@@ -65,7 +65,7 @@ typedef struct {
 /* Cache state */
 typedef struct {
    const HChar* name;
-   int          size;                   /* bytes */
+   Long         size;                   /* bytes */
    int          assoc;
    int          line_size;              /* bytes */
    Bool         sectored;  /* prefetch nearside cacheline on read */
@@ -78,7 +78,7 @@ typedef struct {
    UWord*       tags;
 
   /* for cache use */
-   int          line_size_mask;
+   Long         line_size_mask;
    int*         line_start_mask;
    int*         line_end_mask;
    line_loaded* loaded;
