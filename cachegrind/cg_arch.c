@@ -37,6 +37,8 @@
 static void configure_caches(cache_t* I1c, cache_t* D1c, cache_t* LLc,
                              Bool all_caches_clo_defined);
 
+static void configure_drams(dram_t* dram, Bool dram_clo_defined);
+
 // Checks cache config is ok.  Returns NULL if ok, or a pointer to an error
 // string otherwise.
 static const HChar* check_cache(cache_t* cache)
@@ -110,6 +112,38 @@ static void parse_cache_opt ( cache_t* cache, const HChar* opt,
       "One of the cache parameters was too large and overflowed.\n");
 }
 
+static void parse_dram_opt ( dram_t* dram, const HChar* opt,
+                             const HChar* optval )
+{
+   Long i1, i2, i3, i4;
+   HChar* endptr;
+
+   // Option argument looks like "65536,2,64".  Extract them.
+   i1 = VG_(strtoll10)(optval,   &endptr); if (*endptr != ',')  goto bad;
+   i2 = VG_(strtoll10)(endptr+1, &endptr); if (*endptr != ',')  goto bad;
+   i3 = VG_(strtoll10)(endptr+1, &endptr); if (*endptr != ',')  goto bad;
+   i4 = VG_(strtoll10)(endptr+1, &endptr); if (*endptr != '\0') goto bad;
+   // Check for overflow.
+   dram->page_size   = (Int)i1;
+   dram->size        = (Long)i2;
+   dram->local_size  = (Long)i3;
+   dram->remote_size = (Long)i4;
+
+   if (dram->page_size   != i1) goto overflow;
+   if (dram->size        != i2) goto overflow;
+   if (dram->local_size  != i3) goto overflow;
+   if (dram->remote_size != i4) goto overflow;
+
+   return;
+
+  bad:
+   VG_(fmsg_bad_option)(opt, "Bad argument '%s'\n", optval);
+
+  overflow:
+   VG_(fmsg_bad_option)(opt,
+      "One of the dram parameters was too large and overflowed.\n");
+}
+
 
 Bool VG_(str_clo_cache_opt)(const HChar *arg,
                             cache_t* clo_I1c,
@@ -132,10 +166,29 @@ Bool VG_(str_clo_cache_opt)(const HChar *arg,
       return False;
 }
 
+Bool VG_(str_clo_dram_opt)(const HChar *arg,
+                           dram_t* clo_dram)
+{
+   const HChar* tmp_str;
+
+   if VG_STR_CLO(arg, "--DRAM", tmp_str) {
+      parse_dram_opt(clo_dram, arg, tmp_str);
+      return True;
+   } else
+      return False;
+}
+
+
 static void umsg_cache_img(const HChar* desc, cache_t* c)
 {
    VG_(umsg)("  %s: %'d B, %d-way, %d B lines\n", desc,
              c->size, c->assoc, c->line_size);
+}
+
+static void umsg_dram_img(const HChar* desc, dram_t* c)
+{
+   VG_(umsg)("  %s: %'d B, %d B, %d B \n", desc,
+             c->size, c->local_size, c->remote_size);
 }
 
 // Verifies if c is a valid cache.
@@ -311,6 +364,30 @@ void VG_(post_clo_init_configure_caches)(cache_t* I1c,
 #undef DEFINED
 }
 
+void VG_(post_clo_init_configure_drams)( dram_t* Dram,
+                                         dram_t* clo_Dram)
+{
+#define DEFINED(L)   (-1 != L->size  || -1 != L->page_size || -1 != L->local_size || -1 != L->remote_size)
+
+   // Count how many were defined on the command line.
+   Bool all_drams_clo_defined =
+      (DEFINED(clo_Dram));
+
+   configure_drams( Dram, all_drams_clo_defined );
+
+   // Then replace with any defined on the command line.  (Already checked in
+   // VG(parse_clo_cache_opt)().)
+   if (DEFINED(clo_Dram)) { *Dram = *clo_Dram; }
+
+
+   if (VG_(clo_verbosity) >= 2) {
+      VG_(umsg)("DRAM configuration used:\n");
+      umsg_dram_img ("DRAM", Dram);
+   }
+#undef DEFINED
+}
+
+
 void VG_(print_cache_clo_opts)()
 {
    VG_(printf)(
@@ -335,6 +412,22 @@ locate_cache(const VexCacheInfo *ci, VexCacheKind kind, UInt level)
    }
    return NULL;  // not found
 }
+
+
+
+static void 
+configure_drams(dram_t *Dram, Bool all_drams_clo_defined )
+{
+
+   if (!all_drams_clo_defined) {
+      const HChar warning[] =
+        "Warning: Cannot auto-detect Dram config, using defaults.\n"
+        "         Run with -v to see.\n";
+      VG_(dmsg)("%s", warning);
+      return;
+   }
+}
+
 
 
 // Gives the auto-detected configuration of I1, D1 and LL caches.  They get

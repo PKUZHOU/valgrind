@@ -36,6 +36,8 @@
       - both blocks miss                 --> one miss (not two)
 */
 
+#include<assert.h>
+
 typedef struct {
    Long          size;                   /* bytes */
    Int          assoc;
@@ -47,6 +49,14 @@ typedef struct {
    HChar        desc_line[128];         /* large enough */
    UWord*       tags;
 } cache_t2;
+
+
+typedef struct {
+   Long         size;                   /* bytes */
+   Int          page_size;              /* bytes */
+   Long         local_size;
+   Long         remote_size;
+} dram_t2;
 
 /* By this point, the size/assoc/line_size has been checked. */
 static void cachesim_initcache(cache_t config, cache_t2* c)
@@ -76,6 +86,17 @@ static void cachesim_initcache(cache_t config, cache_t2* c)
    for (i = 0; i < c->sets * c->assoc; i++)
       c->tags[i] = 0;
 }
+
+static void cachesim_initdram(dram_t config, dram_t2 * d)
+{
+   d->size        = config.size;
+   d->page_size   = config.page_size;
+   // currently, the memory space is partitioned to 0->local-1, local->remote
+   d->local_size  = config.local_size;
+   // assert(d->size >= d->local_size);
+   d->remote_size = config.size - config.local_size; 
+}
+
 
 /* This attribute forces GCC to inline the function, getting rid of a
  * lot of indirection around the cache_t2 pointer, if it is known to be
@@ -160,10 +181,22 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
    return True;
 }
 
+__attribute__((always_inline))
+static __inline__
+Bool cachesim_ref_page_miss(dram_t* dram, Addr a, UChar size)
+{
+   // VG_(printf)("page size: %lu dram size: %lu  local size: %lu  remote size: %lu",
+   //             dram->page_size, dram->size, dram->local_size, dram->remote_size);
+   UWord vpage = a >> dram->page_size;
+   //get the physical page number
+   // TODO: va -> page convert
+   
+}
 
 static cache_t2 LL;
 static cache_t2 I1;
 static cache_t2 D1;
+static dram_t2  DRAM;
 
 static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 {
@@ -172,14 +205,22 @@ static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
    cachesim_initcache(LLc, &LL);
 }
 
+static void cachesim_initdrams(dram_t Dram)
+{
+   cachesim_initdram(Dram, &DRAM);
+}
+
+
 __attribute__((always_inline))
 static __inline__
 void cachesim_I1_doref_Gen(Addr a, UChar size, ULong* m1, ULong *mL)
 {
    if (cachesim_ref_is_miss(&I1, a, size)) {
       (*m1)++;
-      if (cachesim_ref_is_miss(&LL, a, size))
+      if (cachesim_ref_is_miss(&LL, a, size)){
          (*mL)++;
+         cachesim_ref_page_miss(&DRAM, a, size);
+      }
    }
 }
 

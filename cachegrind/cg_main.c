@@ -86,6 +86,16 @@ typedef
    }
    BranchCC;
 
+typedef 
+   struct 
+   {
+      ULong a; /* total # memory accesses of this kind */
+      ULong a_local; /* total # memory accesses to local memory */
+      ULong a_remote; /* total # memory accesses to remote memory */
+   }
+   PageCC;
+   
+
 //------------------------------------------------------------
 // Primary data structure #1: CC table
 // - Holds the per-source-line hit/miss stats, grouped by file/function/line.
@@ -1358,6 +1368,10 @@ static cache_t clo_I1_cache = UNDEFINED_CACHE;
 static cache_t clo_D1_cache = UNDEFINED_CACHE;
 static cache_t clo_LL_cache = UNDEFINED_CACHE;
 
+
+/*----DRAM configuration    ----------------------------------*/
+static dram_t clo_DRAM = UNDEFINED_CACHE;
+
 /*------------------------------------------------------------*/
 /*--- cg_fini() and related function                       ---*/
 /*------------------------------------------------------------*/
@@ -1744,7 +1758,8 @@ static Bool cg_process_cmd_line_option(const HChar* arg)
                               &clo_I1_cache,
                               &clo_D1_cache,
                               &clo_LL_cache)) {}
-
+   else if (VG_(str_clo_dram_opt)(arg, 
+                              &clo_DRAM)){}
    else if VG_STR_CLO( arg, "--cachegrind-out-file", clo_cachegrind_out_file) {}
    else if VG_BOOL_CLO(arg, "--cache-sim",  clo_cache_sim)  {}
    else if VG_BOOL_CLO(arg, "--branch-sim", clo_branch_sim) {}
@@ -1804,7 +1819,7 @@ static void cg_pre_clo_init(void)
 static void cg_post_clo_init(void)
 {
    cache_t I1c, D1c, LLc; 
-
+   dram_t Dram;
    CC_table =
       VG_(OSetGen_Create)(offsetof(LineCC, loc),
                           cmp_CodeLoc_LineCC,
@@ -1825,7 +1840,8 @@ static void cg_post_clo_init(void)
                                        &clo_I1_cache,
                                        &clo_D1_cache,
                                        &clo_LL_cache);
-
+   // send in dram config
+   VG_(post_clo_init_configure_drams)(&Dram, &clo_DRAM);
    // min_line_size is used to make sure that we never feed
    // accesses to the simulator straddling more than two
    // cache lines at any cache level
@@ -1847,6 +1863,7 @@ static void cg_post_clo_init(void)
    }
 
    cachesim_initcaches(I1c, D1c, LLc);
+   cachesim_initdrams(Dram); 
 }
 
 VG_DETERMINE_INTERFACE_VERSION(cg_pre_clo_init)
