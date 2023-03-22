@@ -36,7 +36,10 @@
       - both blocks miss                 --> one miss (not two)
 */
 
-#include<assert.h>
+#include "cg_page.h"
+#include "hashmap.h"
+
+#define PAGE_PROF
 
 typedef struct {
    Long          size;                   /* bytes */
@@ -183,14 +186,47 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
 
 __attribute__((always_inline))
 static __inline__
-Bool cachesim_ref_page_miss(dram_t* dram, Addr a, UChar size)
+Bool cachesim_ref_page(dram_t* dram, Addr a, Bool llc_miss)
 {
-   // VG_(printf)("page size: %lu dram size: %lu  local size: %lu  remote size: %lu",
-   //             dram->page_size, dram->size, dram->local_size, dram->remote_size);
-   UWord vpage = a >> dram->page_size;
-   //get the physical page number
-   // TODO: va -> page convert
-   
+   if(n_global_page % 1000 == 0){
+      VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu", n_global_page, n_local_page, n_remote_page);
+   }
+   UWord vpage = a >> page_offset; // get virtual page number
+   PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
+   if (!entry) { // if not found, add to page table
+      PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 0}; // create a new page info
+      page_info.is_local = 1; // default to local
+      page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
+      if (page_info.phys_page >= dram->local_size) {
+         page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
+         n_remote_page ++;
+      }
+      else{
+         page_info.is_local = 1; // otherwise, it is local
+         n_local_page ++; 
+      }
+      if (llc_miss){
+         page_info.acc_cnt_llc = 1; // if it is a llc miss, update the llc miss counter
+      }
+      else{
+         page_info.acc_cnt_tlb = 1; // if it is a tlb miss, update the tlb miss counter
+      }
+      hashmap_set(&page_table, &(PAGE_ENTRY){ // add to page table
+         .virt_page = vpage,
+         .pg_info = page_info});
+      return False;
+   }
+   // update info 
+   else{
+      if (llc_miss){
+         entry->pg_info.acc_cnt_llc ++;
+      }
+      else{
+         entry->pg_info.acc_cnt_tlb ++;
+      }
+      return True;
+   }
+
 }
 
 static cache_t2 LL;
@@ -207,7 +243,11 @@ static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 
 static void cachesim_initdrams(dram_t Dram)
 {
-   cachesim_initdram(Dram, &DRAM);
+   // cachesim_initdram(Dram, &DRAM);
+   DRAM.local_size = Dram.local_size;
+   DRAM.page_size = Dram.page_size;
+   DRAM.remote_size = Dram.remote_size;
+   DRAM.size = Dram.size;
 }
 
 
@@ -215,11 +255,17 @@ __attribute__((always_inline))
 static __inline__
 void cachesim_I1_doref_Gen(Addr a, UChar size, ULong* m1, ULong *mL)
 {
+
+#ifdef PAGE_PROF   
+   cachesim_ref_page(&DRAM, a, false);
+#endif
    if (cachesim_ref_is_miss(&I1, a, size)) {
       (*m1)++;
       if (cachesim_ref_is_miss(&LL, a, size)){
          (*mL)++;
-         cachesim_ref_page_miss(&DRAM, a, size);
+#ifdef PAGE_PROF
+         cachesim_ref_page(&DRAM, a, true);
+#endif
       }
    }
 }
@@ -231,14 +277,21 @@ void cachesim_I1_doref_NoX(Addr a, UChar size, ULong* m1, ULong *mL)
 {
    UWord block  = a >> I1.line_size_bits;
    UInt  I1_set = block & I1.sets_min_1;
-
+#ifdef PAGE_PROF
+   cachesim_ref_page(&DRAM, a, false);
+#endif
    // use block as tag
    if (cachesim_setref_is_miss(&I1, I1_set, block)) {
       UInt  LL_set = block & LL.sets_min_1;
       (*m1)++;
       // can use block as tag as L1I and LL cache line sizes are equal
       if (cachesim_setref_is_miss(&LL, LL_set, block))
+      {
          (*mL)++;
+#ifdef PAGE_PROF
+         cachesim_ref_page(&DRAM, a, false);
+#endif
+      }
    }
 }
 
@@ -246,10 +299,18 @@ __attribute__((always_inline))
 static __inline__
 void cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL)
 {
+#ifdef PAGE_PROF
+   cachesim_ref_page(&DRAM, a, false);
+#endif
    if (cachesim_ref_is_miss(&D1, a, size)) {
       (*m1)++;
       if (cachesim_ref_is_miss(&LL, a, size))
+      {
          (*mL)++;
+#ifdef PAGE_PROF
+         cachesim_ref_page(&DRAM, a, false);
+#endif
+      }
    }
 }
 

@@ -1370,7 +1370,7 @@ static cache_t clo_LL_cache = UNDEFINED_CACHE;
 
 
 /*----DRAM configuration    ----------------------------------*/
-static dram_t clo_DRAM = UNDEFINED_CACHE;
+static dram_t clo_DRAM = UNDEFINED_DRAM;
 
 /*------------------------------------------------------------*/
 /*--- cg_fini() and related function                       ---*/
@@ -1864,6 +1864,7 @@ static void cg_post_clo_init(void)
 
    cachesim_initcaches(I1c, D1c, LLc);
    cachesim_initdrams(Dram); 
+   init_page_table();
 }
 
 VG_DETERMINE_INTERFACE_VERSION(cg_pre_clo_init)

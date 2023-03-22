@@ -187,7 +187,7 @@ static void umsg_cache_img(const HChar* desc, cache_t* c)
 
 static void umsg_dram_img(const HChar* desc, dram_t* c)
 {
-   VG_(umsg)("  %s: %'d B, %d B, %d B \n", desc,
+   VG_(umsg)("  %s: %d B, %d B, %d B \n", desc,
              c->size, c->local_size, c->remote_size);
 }
 
@@ -377,8 +377,11 @@ void VG_(post_clo_init_configure_drams)( dram_t* Dram,
 
    // Then replace with any defined on the command line.  (Already checked in
    // VG(parse_clo_cache_opt)().)
-   if (DEFINED(clo_Dram)) { *Dram = *clo_Dram; }
-
+   // if (DEFINED(clo_Dram)) { *Dram = *clo_Dram; }
+   Dram->local_size = clo_Dram->local_size;
+   Dram->size = clo_Dram->size;
+   Dram->page_size = clo_Dram->page_size;
+   Dram->remote_size = clo_Dram->remote_size;
 
    if (VG_(clo_verbosity) >= 2) {
       VG_(umsg)("DRAM configuration used:\n");
