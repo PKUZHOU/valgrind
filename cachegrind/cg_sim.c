@@ -571,10 +571,10 @@ typedef struct {
 
 
 typedef struct {
-   Long         size;                   /* bytes */
    Int          page_size;              /* bytes */
-   Long         local_size;
-   Long         remote_size;
+   ULong         size;                   /* bytes */
+   ULong         local_size;
+   ULong         remote_size;
 } dram_t2;
 
 /* By this point, the size/assoc/line_size has been checked. */
@@ -604,16 +604,6 @@ static void cachesim_initcache(cache_t config, cache_t2* c)
 
    for (i = 0; i < c->sets * c->assoc; i++)
       c->tags[i] = 0;
-}
-
-static void cachesim_initdram(dram_t config, dram_t2 * d)
-{
-   d->size        = config.size;
-   d->page_size   = config.page_size;
-   // currently, the memory space is partitioned to 0->local-1, local->remote
-   d->local_size  = config.local_size;
-   // assert(d->size >= d->local_size);
-   d->remote_size = config.size - config.local_size; 
 }
 
 
@@ -714,7 +704,7 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool llc_miss)
       PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 0}; // create a new page info
       page_info.is_local = 1; // default to local
       page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
-      if (page_info.phys_page >= dram->local_size) {
+      if (page_info.phys_page >= (dram->local_size >> page_offset)) {
          page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
          n_remote_page ++;
       }
@@ -767,6 +757,7 @@ static void cachesim_initdrams(dram_t Dram)
    DRAM.page_size = Dram.page_size;
    DRAM.remote_size = Dram.remote_size;
    DRAM.size = Dram.size;
+   VG_(printf)("%lu, %lu, %lu, %lu \n", DRAM.page_size, DRAM.size, DRAM.local_size, DRAM.remote_size);
 
    init_page_table();
 }

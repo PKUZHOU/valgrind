@@ -39,11 +39,10 @@ typedef struct {
 // For page tracking 
 typedef struct {
    Int page_size; // bytes 
-   Long size; // bytes
-   Long local_size; // local memory size, bytes
-   Long remote_size; // remote memory size, bytes
+   ULong size; // bytes
+   ULong local_size; // local memory size, bytes
+   ULong remote_size; // remote memory size, bytes
 } dram_t;
-
 
 
 #define MIN_LINE_SIZE         16
