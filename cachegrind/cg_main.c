@@ -402,7 +402,7 @@ void log_1IrNoX_1Dr_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    n->parent->Ir.a++;
 
    cachesim_D1_doref(data_addr, data_size, 
-                     &n->parent->Dr.m1, &n->parent->Dr.mL);
+                     &n->parent->Dr.m1, &n->parent->Dr.mL, True);
    n->parent->Dr.a++;
 }
 
@@ -417,7 +417,7 @@ void log_1IrNoX_1Dw_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    n->parent->Ir.a++;
 
    cachesim_D1_doref(data_addr, data_size, 
-                     &n->parent->Dw.m1, &n->parent->Dw.mL);
+                     &n->parent->Dw.m1, &n->parent->Dw.mL, False);
    n->parent->Dw.a++;
 }
 
@@ -430,7 +430,7 @@ void log_0Ir_1Dr_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    //VG_(printf)("0Ir_1Dr:  CCaddr=0x%010lx,  daddr=0x%010lx,  dsize=%lu\n",
    //            n, data_addr, data_size);
    cachesim_D1_doref(data_addr, data_size, 
-                     &n->parent->Dr.m1, &n->parent->Dr.mL);
+                     &n->parent->Dr.m1, &n->parent->Dr.mL, True);
    n->parent->Dr.a++;
 }
 
@@ -441,7 +441,7 @@ void log_0Ir_1Dw_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    //VG_(printf)("0Ir_1Dw:  CCaddr=0x%010lx,  daddr=0x%010lx,  dsize=%lu\n",
    //            n, data_addr, data_size);
    cachesim_D1_doref(data_addr, data_size, 
-                     &n->parent->Dw.m1, &n->parent->Dw.mL);
+                     &n->parent->Dw.m1, &n->parent->Dw.mL, False);
    n->parent->Dw.a++;
 }
 
