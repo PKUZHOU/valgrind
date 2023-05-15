@@ -46,6 +46,8 @@
 #define PAGE_PROF
 
 #ifdef PAGE_PROF
+
+
 // Pase hashtable here
 static ULong n_local_page = 0;
 static ULong n_remote_page = 0;
@@ -57,9 +59,15 @@ struct hashmap page_table;
 
 typedef struct page_info{
     ULong phys_page; // physical page id
-    ULong acc_cnt_tlb;  // how many times this page has been accessed at pte
+    ULong acc_cnt_tlb;  // how many times this page has been accessed at pte, increase after each true access
     ULong acc_cnt_llc;  // how many times this page has been accessed after last miss
+    
+    // for linux page management policies
+    ULong age;          // increase after each scan if a bit is 0
+    ULong acc_cnt_a_bit; 
+    Bool a_bit;         // access bit
     Bool is_local;      // is this page local or remote
+
 } PAGE_INFO;
 
 typedef struct page_entry {
@@ -690,59 +698,174 @@ Bool cachesim_ref_is_miss(cache_t2* c, Addr a, UChar size)
    return True;
 }
 
+
+/**********************Hotness Tracking Strategy***********************/
+
+#ifdef PAGE_PROF
+
+// Page migration configs
+enum migration_policy {
+	MIG_POLICY_NOP = 0,
+	MIG_POLICY_PURE_RANDOM,
+	NUM_MIG_POLICIES
+};
+
+static ULong tik = 0;
+static Int interval = 10000000;
+// static Int interval = 10000;
+static Int n_dump_page = 500;
+static float local_watermark_ratio = 0.75;
+static hotness_thresh = 5;
+
+static ULong useless_hot = 0;
+static ULong tlb_hot = 0;
+static ULong llc_hot = 0;
+static ULong profiled_epochs = 0;
+static Bool profiling_start = 0;
+static Bool profiling_end = 0;
+
+
+
+bool llc_miss_tracker_page_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    if(entry->pg_info.acc_cnt_llc > 0){
+        llc_hot++;
+    }
+    entry->pg_info.acc_cnt_llc = 0;
+    return true;
+}
+
+void llc_miss_tracker_scan(){
+    // scan the page table and get modified pages
+    hashmap_scan(&page_table, llc_miss_tracker_page_iter, NULL);
+    // reset the hotness
+    useless_hot = 0;
+    tlb_hot = 0;
+}
+
+bool scan_and_reset_a_bit_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    if(entry->pg_info.a_bit)
+      entry->pg_info.acc_cnt_a_bit ++;  
+
+    entry->pg_info.a_bit = 0;
+    return true;
+}
+
+void a_bit_based_hotness_profiling(){
+  // scan the page table and get modified pages
+  hashmap_scan(&page_table, scan_and_reset_a_bit_iter, NULL);
+}
+
+bool reset_acc_cnt_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    entry->pg_info.acc_cnt_a_bit = 0;
+    entry->pg_info.acc_cnt_llc = 0;
+    entry->pg_info.acc_cnt_tlb = 0;
+    return true;
+}
+
+void reset_acc_cnt_scan(){
+    // scan the page table and get modified pages
+    hashmap_scan(&page_table, reset_acc_cnt_iter, NULL);
+}
+
+void dump_hotness_info(int n_pages){
+  int remaining_pages = n_pages;
+  for (SizeT i = 0; i < page_table.nbuckets; i++) {
+    struct bucket *bucket = bucket_at(&page_table, i);
+    if (bucket->dib) {
+      struct page_entry * entry = bucket_item(bucket); 
+      if(entry->pg_info.acc_cnt_a_bit > hotness_thresh)
+      {
+        VG_(printf)("page: %lx  acc_cnt_a_bit: %lu  acc_cnt_llc: %lu  acc_cnt_tlb: %lu\n", entry->virt_page, entry->pg_info.acc_cnt_a_bit, entry->pg_info.acc_cnt_llc, entry->pg_info.acc_cnt_tlb);
+        remaining_pages --;
+      }      
+    }
+    if(remaining_pages == 0)
+      return;
+  }
+}
+
+#endif 
+
+
+
 #ifdef PAGE_PROF
 __attribute__((always_inline))
 static __inline__
 Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
 {
-   UWord vpage = a >> page_offset; // get virtual page number
-   PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
-   if (entry == NULL) { // if not found, add to page table
-      if(n_global_page % 10000 == 0){
-         VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
-      }
-      PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 0}; // create a new page info
-      page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
-      if (page_info.phys_page >= (dram->local_size >> page_offset)) {
-         page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
-         n_remote_page ++;
+
+  if(!llc_miss){
+    tik++; // fake tik, only count once
+  }
+
+  UWord vpage = a >> page_offset; // get virtual page number
+  PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
+  if (entry == NULL) { // if not found, add to page table
+    if(n_global_page % 10000 == 0){
+       VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
+    }
+    PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1}; // create a new page info
+    page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
+    if (page_info.phys_page >= (dram->local_size >> page_offset)) {
+        page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
+        n_remote_page ++;
+    }
+    else{
+        page_info.is_local = 1; // otherwise, it is local
+        n_local_page ++; 
+    }
+    if (is_read){
+      page_info.acc_cnt_llc = 1; // llc miss can distinguish between read and write
+    }
+    hashmap_set(&page_table, &(PAGE_ENTRY){ // add to page table
+        .virt_page = vpage,
+        .pg_info = page_info});
+  }
+  // update info 
+  else{
+    if(is_read){
+      if(llc_miss){
+        entry->pg_info.acc_cnt_llc ++;
       }
       else{
-         page_info.is_local = 1; // otherwise, it is local
-         n_local_page ++; 
+        entry->pg_info.acc_cnt_tlb ++;
       }
-      if (llc_miss){
-         page_info.acc_cnt_llc = 1; // if it is a llc miss, update the llc miss counter
+    }
+    else{
+      if(!llc_miss){
+        entry->pg_info.acc_cnt_tlb ++; // write miss
       }
-      else{
-         page_info.acc_cnt_tlb = 1; // if it is a tlb miss, update the tlb miss counter
-      }
-      hashmap_set(&page_table, &(PAGE_ENTRY){ // add to page table
-         .virt_page = vpage,
-         .pg_info = page_info});
-      return False;
-   }
-   // update info 
-   else{
-      if (llc_miss){
-         entry->pg_info.acc_cnt_llc ++;
-      }
-      else{
-         entry->pg_info.acc_cnt_tlb ++;
-      }
-      return True;
-   }
+    }
+    // set a bit 
+    entry->pg_info.a_bit = 1;
+  }
 
-   if(!llc_miss){
+  // Trigger page hotness profiling
+  // if(n_global_page > 10000 && profiling_start == 0){
+  if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
+    profiling_start = 1;
+    VG_(printf)("Profiling start\n");
+  }
 
-   }
-
+  if(profiling_start && !profiling_end){
+    // profiling page hotness periodically
+    if(tik % interval == 0){
+      a_bit_based_hotness_profiling();
+      profiled_epochs ++;
+    }
+    if(profiled_epochs == 10){
+      dump_hotness_info(n_dump_page);
+      reset_acc_cnt_scan();
+      profiled_epochs = 0;
+      profiling_end = 1;
+    }
+  }
+  return True;
 }
 #endif
-
-
-
-
 
 
 static cache_t2 LL;
