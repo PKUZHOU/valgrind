@@ -797,9 +797,9 @@ static __inline__
 Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
 {
 
-  if(!llc_miss){
-    tik++; // fake tik, only count once
-  }
+//   if(!llc_miss){
+//     tik++; // fake tik, only count once
+//   }
 
   UWord vpage = a >> page_offset; // get virtual page number
   PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table

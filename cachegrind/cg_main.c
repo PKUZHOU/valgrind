@@ -344,6 +344,7 @@ void log_1IrGen_0D_cache_access(InstrInfo* n)
    cachesim_I1_doref_Gen(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
 }
 
 static VG_REGPARM(1)
@@ -354,6 +355,7 @@ void log_1IrNoX_0D_cache_access(InstrInfo* n)
    cachesim_I1_doref_NoX(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
 }
 
 static VG_REGPARM(2)
@@ -366,9 +368,11 @@ void log_2IrNoX_0D_cache_access(InstrInfo* n, InstrInfo* n2)
    cachesim_I1_doref_NoX(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
    cachesim_I1_doref_NoX(n2->instr_addr, n2->instr_len,
 			 &n2->parent->Ir.m1, &n2->parent->Ir.mL);
    n2->parent->Ir.a++;
+   tik++;
 }
 
 static VG_REGPARM(3)
@@ -383,12 +387,15 @@ void log_3IrNoX_0D_cache_access(InstrInfo* n, InstrInfo* n2, InstrInfo* n3)
    cachesim_I1_doref_NoX(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
    cachesim_I1_doref_NoX(n2->instr_addr, n2->instr_len,
 			 &n2->parent->Ir.m1, &n2->parent->Ir.mL);
    n2->parent->Ir.a++;
+   tik++;
    cachesim_I1_doref_NoX(n3->instr_addr, n3->instr_len,
 			 &n3->parent->Ir.m1, &n3->parent->Ir.mL);
    n3->parent->Ir.a++;
+   tik++;
 }
 
 static VG_REGPARM(3)
@@ -400,6 +407,7 @@ void log_1IrNoX_1Dr_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    cachesim_I1_doref_NoX(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
 
    cachesim_D1_doref(data_addr, data_size, 
                      &n->parent->Dr.m1, &n->parent->Dr.mL, True);
@@ -415,6 +423,7 @@ void log_1IrNoX_1Dw_cache_access(InstrInfo* n, Addr data_addr, Word data_size)
    cachesim_I1_doref_NoX(n->instr_addr, n->instr_len,
 			 &n->parent->Ir.m1, &n->parent->Ir.mL);
    n->parent->Ir.a++;
+   tik++;
 
    cachesim_D1_doref(data_addr, data_size, 
                      &n->parent->Dw.m1, &n->parent->Dw.mL, False);
