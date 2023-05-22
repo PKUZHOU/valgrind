@@ -817,9 +817,11 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
         page_info.is_local = 1; // otherwise, it is local
         n_local_page ++; 
     }
-    if (is_read){
-      page_info.acc_cnt_llc = 1; // llc miss can distinguish between read and write
-    }
+    // if (llc_miss){     // avoid repeated counting
+    //     if (is_read){
+    //     page_info.acc_cnt_llc = 1; // llc miss can distinguish between read and write
+    //     }
+    // }
     hashmap_set(&page_table, &(PAGE_ENTRY){ // add to page table
         .virt_page = vpage,
         .pg_info = page_info});
