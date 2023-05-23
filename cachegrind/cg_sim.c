@@ -47,6 +47,12 @@
 
 #ifdef PAGE_PROF
 
+// global performance metric
+static ULong n_local_page_acc_cnt = 0;
+static ULong n_remote_page_acc_cnt = 0;
+static ULong n_local_page_allocate_cnt = 0;
+static ULong n_remote_page_allocate_cnt = 0;
+static ULong migrate_cnt = 0;
 
 // Pase hashtable here
 static ULong n_local_page = 0;
@@ -178,7 +184,7 @@ static uint64_t get_hash(struct hashmap *map, const void *key) {
 }
 
 // hashmap_new_with_allocator returns a new hash map using a custom allocator.
-// See hashmap_new for more information information
+// See hashmap_new for more information
 struct hashmap *hashmap_new_with_allocator(
                             void *(*_malloc)(SizeT), 
                             void *(*_realloc)(void*, SizeT), 
@@ -797,75 +803,85 @@ static __inline__
 Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
 {
 
-//   if(!llc_miss){
-//     tik++; // fake tik, only count once
-//   }
+    UWord vpage = a >> page_offset;                        // get virtual page number
+    PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
 
-  UWord vpage = a >> page_offset; // get virtual page number
-  PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
-  if (entry == NULL) { // if not found, add to page table
-    if(n_global_page % 10000 == 0){
-       VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
-    }
-    PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1}; // create a new page info
-    page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
-    if (page_info.phys_page >= (dram->local_size >> page_offset)) {
-        page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
-        n_remote_page ++;
+    if (llc_miss){
+        // before a llc_miss, there must be a tlb access
+        if (entry == NULL) { 
+            VG_(tool_panic)("page first accessed in a llc miss!");
+        }
+        else if (is_read){
+            entry->pg_info.acc_cnt_llc++;
+            if (entry->pg_info.is_local)
+                n_local_page_acc_cnt++;
+            else
+                n_remote_page_acc_cnt++;
+        }
     }
     else{
-        page_info.is_local = 1; // otherwise, it is local
-        n_local_page ++; 
-    }
-    // if (llc_miss){     // avoid repeated counting
-    //     if (is_read){
-    //     page_info.acc_cnt_llc = 1; // llc miss can distinguish between read and write
-    //     }
-    // }
-    hashmap_set(&page_table, &(PAGE_ENTRY){ // add to page table
-        .virt_page = vpage,
-        .pg_info = page_info});
-  }
-  // update info 
-  else{
-    if(is_read){
-      if(llc_miss){
-        entry->pg_info.acc_cnt_llc ++;
-      }
-      else{
-        entry->pg_info.acc_cnt_tlb ++;
-      }
-    }
-    else{
-      if(!llc_miss){
-        entry->pg_info.acc_cnt_tlb ++; // write miss
-      }
-    }
-    // set a bit 
-    entry->pg_info.a_bit = 1;
-  }
+        // the page is not in the hashmap, which means its the first time that we try to access this page
+        // so we create a new page, set its attribute and add it to the hashmap
+        // when setting its attribute, we are actually doing the process of allocation (decide allocate at which place, local or remote)
+        // however, this assumps that all the pages are anon pages, which is created when it is firstly accessed (is this right?)
+        if (entry == NULL) {
+            if(n_global_page % 10000 == 0){
+                VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
+                VG_(printf)("n_local_page_allocate_cnt: %lu  n_remote_page_allocate_cnt: %lu\n", n_local_page_allocate_cnt, n_remote_page_allocate_cnt);
+                VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
+            }
+            PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1}; // create a new page info
+            page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
+            if (page_info.phys_page >= (dram->local_size >> page_offset)) {
+                page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
+                n_remote_page++;
+                n_remote_page_allocate_cnt++;
+            }
+            else{
+                page_info.is_local = 1; // otherwise, it is local
+                n_local_page++;
+                n_local_page_allocate_cnt++; 
+            }
+            
+            // add to page table
+            hashmap_set(&page_table, &(PAGE_ENTRY){.virt_page = vpage, .pg_info = page_info});
+        }
+        else{
+            // tlb access time added
+            entry->pg_info.acc_cnt_tlb ++;
+            // set a bit 
+            entry->pg_info.a_bit = 1;
+        }
 
-  // Trigger page hotness profiling
-  // if(n_global_page > 10000 && profiling_start == 0){
-  if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
-    profiling_start = 1;
-    VG_(printf)("Profiling start\n");
-  }
+        // Trigger page hotness profiling
+        // For one instruction, we just want to profile once, so we put the state updating process below
+        // It means that, each time we try to access an address in memory, we will update the statement (e.g., do something, such as do profiling)
+        if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
+            profiling_start = 1;
+            VG_(printf)("Profiling start\n");
+        }
 
-  if(profiling_start && !profiling_end){
-    // profiling page hotness periodically
-    if(tik % interval == 0){
-      a_bit_based_hotness_profiling();
-      profiled_epochs ++;
+        // Trigger page hotness profiling
+        if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
+            profiling_start = 1;
+            VG_(printf)("Profiling start\n");
+        }
+
+        if(profiling_start && !profiling_end){
+            // profiling page hotness periodically
+            if(tik % interval == 0){
+                a_bit_based_hotness_profiling();
+                profiled_epochs ++;
+            }
+            if(profiled_epochs == 10){
+                dump_hotness_info(n_dump_page);
+                reset_acc_cnt_scan();
+                profiled_epochs = 0;
+                profiling_end = 1;
+            }
+        }
     }
-    if(profiled_epochs == 10){
-      dump_hotness_info(n_dump_page);
-      reset_acc_cnt_scan();
-      profiled_epochs = 0;
-      profiling_end = 1;
-    }
-  }
-  return True;
+    return True;
 }
 #endif
 
