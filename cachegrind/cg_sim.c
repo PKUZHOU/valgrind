@@ -54,6 +54,28 @@ static ULong n_local_page_allocate_cnt = 0;
 static ULong n_remote_page_allocate_cnt = 0;
 static ULong migrate_cnt = 0;
 
+// BitMap table
+#define BITMAP_TABLE_SIZE 1024
+#define TIME
+
+typedef struct bitmap_table_entry{
+    bool valid;
+    Addr address; // hot pages address
+    ULong access_bitmap; // access bitmap in 64 time slices
+} BITMAP_ENTRY;
+
+typedef struct bitmap_table{
+    BITMAP_ENTRY _bitmap_table[BITMAP_TABLE_SIZE];
+} BITMAP_TABLE;
+
+
+
+// we need a struct to store information of which pages are in the local and which are in the local
+// the struct should have the features like LRU (maybe useful in ), fast insert and delete (we need to do migrate)
+// we only get physical address, theoretically we can't do migrate because we can't affect page table
+// but we can add an additional mapping, from 'fake physical address' to 'true physical address', by doing this, we can simulate the change of page table
+// so, the 'fake physical address' is just the address we get, and the 'true physical address' is phys_page we record in page_info
+
 // Pase hashtable here
 static ULong n_local_page = 0;
 static ULong n_remote_page = 0;
@@ -828,7 +850,7 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
             if(n_global_page % 10000 == 0){
                 VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
                 VG_(printf)("n_local_page_allocate_cnt: %lu  n_remote_page_allocate_cnt: %lu\n", n_local_page_allocate_cnt, n_remote_page_allocate_cnt);
-                VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
+                VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
             }
             PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1}; // create a new page info
             page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
