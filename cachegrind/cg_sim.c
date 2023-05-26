@@ -95,7 +95,7 @@ typedef struct page_entry {
 
 // BitMap table
 #define BITMAP_TABLE_SIZE 1024
-#define TIMESLICE 64  // how many instructions are a timeslice stand for
+#define TIMESLICE 100000  // how many instructions are a timeslice stand for
 
 #define CM_SKETCH_TABLE_SIZE (16*1024)
 #define CM_SKETCH_TABLE_NUM 3
@@ -267,6 +267,7 @@ void bitmap_table_add_entry_sorted_by_cnt_epoch(Addr ppn){  // Dichotomous searc
                     end = mid;
                 else
                     start = mid;
+                mid = (start + end) / 2;
             }
             bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, end);
         }
