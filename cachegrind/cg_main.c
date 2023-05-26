@@ -1873,6 +1873,9 @@ static void cg_post_clo_init(void)
 
    cachesim_initcaches(I1c, D1c, LLc);
    cachesim_initdrams(Dram); 
+   cm_sketch_init();
+   bitmap_table_refresh();
+   hot_page_selector_init();
 }
 
 VG_DETERMINE_INTERFACE_VERSION(cg_pre_clo_init)

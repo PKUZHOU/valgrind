@@ -54,29 +54,7 @@ static ULong n_local_page_allocate_cnt = 0;
 static ULong n_remote_page_allocate_cnt = 0;
 static ULong migrate_cnt = 0;
 
-// BitMap table
-#define BITMAP_TABLE_SIZE 1024
-#define TIME
 
-typedef struct bitmap_table_entry{
-    bool valid;
-    Addr address; // hot pages address
-    ULong access_bitmap; // access bitmap in 64 time slices
-} BITMAP_ENTRY;
-
-typedef struct bitmap_table{
-    BITMAP_ENTRY _bitmap_table[BITMAP_TABLE_SIZE];
-} BITMAP_TABLE;
-
-
-
-// we need a struct to store information of which pages are in the local and which are in the local
-// the struct should have the features like LRU (maybe useful in ), fast insert and delete (we need to do migrate)
-// we only get physical address, theoretically we can't do migrate because we can't affect page table
-// but we can add an additional mapping, from 'fake physical address' to 'true physical address', by doing this, we can simulate the change of page table
-// so, the 'fake physical address' is just the address we get, and the 'true physical address' is phys_page we record in page_info
-
-// Pase hashtable here
 static ULong n_local_page = 0;
 static ULong n_remote_page = 0;
 static ULong n_global_page = 0;
@@ -84,11 +62,23 @@ static ULong n_global_page = 0;
 static const Long page_offset = 12;
 
 struct hashmap page_table;
+static ULong tik = 0;
+
+static void *hashmap_get(struct hashmap *map, const void *key);
+static bool hashmap_scan(struct hashmap *map, bool (*iter)(const void *item, void *udata), void *udata);
 
 typedef struct page_info{
     ULong phys_page; // physical page id
     ULong acc_cnt_tlb;  // how many times this page has been accessed at pte, increase after each true access
     ULong acc_cnt_llc;  // how many times this page has been accessed after last miss
+
+    // period info and epoch info, used for hot table updater
+    // we temporarily use these counters to simulate the function of cm-sketch
+    ULong acc_cnt_tlb_period;  
+    ULong acc_cnt_llc_period;  
+
+    ULong acc_cnt_tlb_epoch;  
+    ULong acc_cnt_llc_epoch;  
     
     // for linux page management policies
     ULong age;          // increase after each scan if a bit is 0
@@ -102,6 +92,345 @@ typedef struct page_entry {
     ULong virt_page; // virtual page id
     PAGE_INFO pg_info;  // page info
 }PAGE_ENTRY;
+
+// BitMap table
+#define BITMAP_TABLE_SIZE 1024
+#define TIMESLICE 64  // how many instructions are a timeslice stand for
+
+#define CM_SKETCH_TABLE_SIZE (16*1024)
+#define CM_SKETCH_TABLE_NUM 3
+#define EPOCH (2*64*TIMESLICE)
+
+typedef struct _bitmap_table_entry{
+    bool valid;
+    Addr ppn; // hot pages address
+    ULong access_bitmap; // access bitmap in 64 time slices
+    uint64_t acc_cnt_llc_epoch; // this term is not in the hardware, but we add it for the convience of software realization
+} BITMAP_ENTRY;
+
+typedef struct _bitmap_table{
+    BITMAP_ENTRY _bitmap_table[BITMAP_TABLE_SIZE];  // we organize this array as a queue
+    uint64_t used;  // number of entries in the table
+} BITMAP_TABLE;
+
+BITMAP_TABLE bitmap_table;
+
+
+void print_bitmap_table(){
+    VG_(printf)("start profiling the bitmap table at tik %lu, used item %lu\n", tik, bitmap_table.used);
+    for (int i = 0; i < bitmap_table.used; i++){
+        VG_(printf)("valid: %d  ppn: %llx  access_bitmap: %llx  acc_cnt_llc_epoch: %llu\n", bitmap_table._bitmap_table[i].valid, bitmap_table._bitmap_table[i].ppn,
+                                                                                          bitmap_table._bitmap_table[i].access_bitmap, bitmap_table._bitmap_table[i].acc_cnt_llc_epoch);
+    }
+    VG_(printf)("end profiling\n");
+}
+
+void bitmap_table_refresh(){
+    bitmap_table.used = 0;
+    for (int i = 0; i < BITMAP_TABLE_SIZE; i++){
+        bitmap_table._bitmap_table[i].valid = False;
+        bitmap_table._bitmap_table[i].ppn = 0;
+        bitmap_table._bitmap_table[i].access_bitmap = 0;
+        bitmap_table._bitmap_table[i].acc_cnt_llc_epoch = 0;
+    }
+}
+
+void bitmap_table_pop_enrty(){
+    if (bitmap_table.used == 0){
+        VG_(tool_panic)("can't pop element from an empty bitmap table!");
+    }
+    else{
+        for (int i = 0; i < bitmap_table.used && i < BITMAP_TABLE_SIZE; i++){
+            if (i == BITMAP_TABLE_SIZE - 1){
+                bitmap_table._bitmap_table[i].valid = False;
+                bitmap_table._bitmap_table[i].ppn = 0;
+                bitmap_table._bitmap_table[i].access_bitmap = 0;
+                bitmap_table._bitmap_table[i].acc_cnt_llc_epoch = 0;
+            }
+            else
+                bitmap_table._bitmap_table[i] = bitmap_table._bitmap_table[i+1];
+        }
+        bitmap_table.used--;
+        
+    }
+}
+
+void bitmap_table_add_entry(Addr x){
+    Addr vpage = x >> page_offset; 
+    PAGE_ENTRY* entry = hashmap_get(&page_table, &vpage); 
+    if (entry == NULL){
+        VG_(tool_panic)("page inserted is never accessed, that's strange!"); 
+    }
+    uint64_t acc_cnt_llc_epoch = entry->pg_info.acc_cnt_llc_epoch;
+
+    bitmap_table._bitmap_table[bitmap_table.used].valid = True;
+    bitmap_table._bitmap_table[bitmap_table.used].ppn = x >> page_offset; 
+    bitmap_table._bitmap_table[bitmap_table.used].access_bitmap = 1;
+    bitmap_table._bitmap_table[bitmap_table.used].acc_cnt_llc_epoch = acc_cnt_llc_epoch;
+}
+
+inline void bitmap_table_delete_entry(int position){
+    if (position >= bitmap_table.used)
+        VG_(tool_panic)("position >= bitmap_table.used when delete element!"); 
+
+    for(int i = position; i < bitmap_table.used; i++){
+        if (i == BITMAP_TABLE_SIZE - 1){
+            bitmap_table._bitmap_table[i].valid = False;
+            bitmap_table._bitmap_table[i].ppn = 0;
+            bitmap_table._bitmap_table[i].access_bitmap = 0;
+            bitmap_table._bitmap_table[i].acc_cnt_llc_epoch = 0;
+        }
+        else{
+            bitmap_table._bitmap_table[i] = bitmap_table._bitmap_table[i+1];
+        }
+    }
+    bitmap_table.used -= 1;
+}
+
+inline void bitmap_table_insert_entry(Addr ppn, uint64_t acc_cnt_llc_epoch, int position){
+
+    // clamp
+    if (position > BITMAP_TABLE_SIZE - 1){
+        return ;
+    }
+    
+    Addr vpage = ppn; 
+    ULong _bitmap = 1;
+    for (int i = 0; i < bitmap_table.used; i++){
+        if (bitmap_table._bitmap_table[i].ppn == vpage){  // this means the address is already in the table
+            _bitmap = bitmap_table._bitmap_table[i].access_bitmap;
+            bitmap_table_delete_entry(i);
+        }
+    }
+
+    // the table is full, delete the last one
+    if (bitmap_table.used > BITMAP_TABLE_SIZE - 1){
+        bitmap_table.used = BITMAP_TABLE_SIZE - 1;
+    }
+
+    if (position > bitmap_table.used){
+        position = bitmap_table.used;
+    }
+
+    // insert at position
+    for (int i = bitmap_table.used; i > position; i--){
+        bitmap_table._bitmap_table[i] = bitmap_table._bitmap_table[i-1];
+    }
+
+    bitmap_table._bitmap_table[position].valid = True;
+    bitmap_table._bitmap_table[position].ppn = vpage; 
+    bitmap_table._bitmap_table[position].access_bitmap = _bitmap;
+    bitmap_table._bitmap_table[position].acc_cnt_llc_epoch = acc_cnt_llc_epoch;
+
+    bitmap_table.used += 1;
+}
+
+
+void bitmap_table_add_entry_sorted_by_cnt_epoch(Addr ppn){  // Dichotomous search, decreasing
+
+    Addr vpage = ppn; 
+    PAGE_ENTRY* entry = hashmap_get(&page_table, &vpage); 
+    if (entry == NULL){
+        VG_(tool_panic)("page inserted is never accessed, that's strange!"); 
+    }
+    uint64_t acc_cnt_llc_epoch = entry->pg_info.acc_cnt_llc_epoch;
+
+    if (bitmap_table.used == 0){
+        // bitmap_table._bitmap_table[bitmap_table.used].valid = True;
+        // bitmap_table._bitmap_table[bitmap_table.used].ppn = ppn;
+        // bitmap_table._bitmap_table[bitmap_table.used].access_bitmap = 1;
+        // bitmap_table._bitmap_table[bitmap_table.used].acc_cnt_llc_epoch = acc_cnt_llc_epoch;
+        bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, 0);
+    }
+    else if (bitmap_table.used == 1){
+        uint64_t acc_cnt_llc_epoch0 = bitmap_table._bitmap_table[0].acc_cnt_llc_epoch;
+        if (acc_cnt_llc_epoch0 >= acc_cnt_llc_epoch){
+            bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, 1);
+        }
+        else{
+            bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, 0);
+        }
+    }
+    else{
+        int start = 0;
+        int end = bitmap_table.used - 1;
+        int mid = (start + end) / 2;
+        if (bitmap_table._bitmap_table[start].acc_cnt_llc_epoch < acc_cnt_llc_epoch){
+            bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, 0);
+        }
+        else if (bitmap_table._bitmap_table[end].acc_cnt_llc_epoch > acc_cnt_llc_epoch){
+            bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, bitmap_table.used);
+        }
+        else{
+            while (start < end - 1){
+                if (acc_cnt_llc_epoch > bitmap_table._bitmap_table[mid].acc_cnt_llc_epoch)
+                    end = mid;
+                else
+                    start = mid;
+            }
+            bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, end);
+        }
+    }
+    
+}
+
+#define THRESHOLD 1000
+
+typedef struct _hot_page_selector{
+    uint64_t threshold;
+} HOT_PAGE_SELECTOR;
+
+HOT_PAGE_SELECTOR hot_page_selector;
+
+void hot_page_selector_init(){
+    hot_page_selector.threshold = THRESHOLD;
+}
+
+bool select_hot_pages_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    bitmap_table_add_entry_sorted_by_cnt_epoch(entry->virt_page);
+    return true;
+}
+
+void select_hot_pages(){
+    hashmap_scan(&page_table, select_hot_pages_iter, NULL);
+}
+
+bool reset_acc_cnt_period_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    entry->pg_info.acc_cnt_llc_period = 0;
+    entry->pg_info.acc_cnt_tlb_period = 0;
+    return true;
+}
+
+// hot table updater
+void hot_page_update_bitmap_table(){
+    for (int i = 0; i < bitmap_table.used; i++){
+        bitmap_table._bitmap_table[i].access_bitmap = (bitmap_table._bitmap_table[i].access_bitmap << 1);
+
+        Addr vpage = bitmap_table._bitmap_table[i].ppn;
+        PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage);
+        if (entry == NULL){
+            VG_(tool_panic)("page in the bitmap is never accessed, that's strange!");
+        }
+        else{
+            if (entry->pg_info.acc_cnt_llc_period > 0)  // we only regard these pages which is missed in the llc as accessed
+                bitmap_table._bitmap_table[i].access_bitmap = (bitmap_table._bitmap_table[i].access_bitmap | 1);
+        }
+    }
+    // reset the period counters
+    hashmap_scan(&page_table, reset_acc_cnt_period_iter, NULL);
+}
+
+
+
+// CM-Sketch
+
+
+typedef uint64_t (*cm_sketch_hash_f[CM_SKETCH_TABLE_NUM])(Addr item);
+
+typedef struct _cm_sketch{
+    uint64_t hash_table[CM_SKETCH_TABLE_NUM][CM_SKETCH_TABLE_SIZE];
+    cm_sketch_hash_f hash;
+} CM_SKETCH;
+
+CM_SKETCH cm_sketch;
+
+void cm_sketch_add(Addr item){
+    for (int i = 0; i < CM_SKETCH_TABLE_NUM; i++){
+        uint64_t loc = cm_sketch.hash[i](item);
+        cm_sketch.hash_table[i][loc] += 1;
+    }
+}
+
+uint64_t cm_sketch_query(Addr item){
+    uint64_t min_ = -1;
+    for (int i = 0; i < CM_SKETCH_TABLE_NUM; i++){
+        uint64_t loc = cm_sketch.hash[i](item);
+        if (min_ == -1 || min_ > cm_sketch.hash_table[i][loc])
+            min_ = cm_sketch.hash_table[i][loc];
+    }
+    return min_;
+}
+
+// three hash functions
+
+uint64_t hash1(Addr x) {
+    uint64_t a = 0x12345678; // a random number
+    return ((x ^ a) >> 1) % CM_SKETCH_TABLE_SIZE;
+}
+
+uint64_t hash2(Addr x) {
+    uint64_t p = 1000000007; // a large prime number
+    return (x * p) % CM_SKETCH_TABLE_SIZE;
+}
+
+uint64_t hash3(Addr x) {
+    uint64_t b = 0x87654321; // a random number
+    uint64_t sum = 0;
+    for (int i = 0; i < 8; i++) { // assume x is a 32-bit integer
+        sum += ((x & 0xF) ^ (b & 0xF)); // xor the last four bits of x and b
+        x >>= 4; // right shift x by four bits
+        b >>= 4; // right shift b by four bits
+    }
+    return sum % CM_SKETCH_TABLE_SIZE;
+}
+
+void cm_sketch_init(){
+    cm_sketch.hash[0] = hash1;
+    cm_sketch.hash[1] = hash2;
+    cm_sketch.hash[2] = hash3;
+    // maybe there is an instruction like "VG_(memset)", but nerver mind, its cost is minus
+    for (int i = 0; i < CM_SKETCH_TABLE_NUM; i++)
+        for (int j = 0; j < CM_SKETCH_TABLE_SIZE; j++)
+            cm_sketch.hash_table[i][j] = 0;
+}
+
+int epoch_state = 0; // 0 -- beigin, 1 -- mid
+
+bool reset_acc_cnt_epoch_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    entry->pg_info.acc_cnt_llc_epoch = 0;
+    entry->pg_info.acc_cnt_tlb_epoch = 0;
+    return true;
+}
+
+void bitmap_state_update_epoch_by_epoch(){
+    if (tik % EPOCH == 0){  // at the beginning of an epoch, we need to clear all the epoch counters
+        epoch_state = 0;
+        hashmap_scan(&page_table, reset_acc_cnt_epoch_iter, NULL);
+    }
+    else if (tik % (EPOCH / 2) == 0){ // if in the middle of an epoch, we need to choose hot pages and put them into the bitmap tables
+        epoch_state = 1;
+        select_hot_pages();
+        print_bitmap_table();
+    }
+    
+    if (tik % TIMESLICE == 0 && epoch_state == 1){
+        hot_page_update_bitmap_table();
+    }
+}
+
+void bitmap_state_update_slide_window(){
+    if (tik % EPOCH == 0){
+
+    }
+    if (tik % TIMESLICE == 0){
+
+    }
+}
+
+
+// we need a struct to store information of which pages are in the local and which are in the local
+// the struct should have the features like LRU (maybe useful in ), fast insert and delete (we need to do migrate)
+// we only get physical address, theoretically we can't do migrate because we can't affect page table
+// but we can add an additional mapping, from 'fake physical address' to 'true physical address', by doing this, we can simulate the change of page table
+// so, the 'fake physical address' is just the address we get, and the 'true physical address' is phys_page we record in page_info
+
+
+// Pase hashtable here
+
+
 
 int page_compare(const void *a, const void *b, void *udata)
 {
@@ -738,7 +1067,7 @@ enum migration_policy {
 	NUM_MIG_POLICIES
 };
 
-static ULong tik = 0;
+
 static Int interval = 10000000;
 // static Int interval = 10000;
 static Int n_dump_page = 500;
@@ -835,6 +1164,8 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
         }
         else if (is_read){
             entry->pg_info.acc_cnt_llc++;
+            entry->pg_info.acc_cnt_llc_period++;
+            entry->pg_info.acc_cnt_llc_epoch++;
             if (entry->pg_info.is_local)
                 n_local_page_acc_cnt++;
             else
@@ -852,7 +1183,7 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
                 VG_(printf)("n_local_page_allocate_cnt: %lu  n_remote_page_allocate_cnt: %lu\n", n_local_page_allocate_cnt, n_remote_page_allocate_cnt);
                 VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
             }
-            PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1}; // create a new page info
+            PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1, .acc_cnt_llc_period = 0, .acc_cnt_tlb_period = 1, .acc_cnt_llc_epoch = 0, .acc_cnt_tlb_epoch = 1}; // create a new page info
             page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
             if (page_info.phys_page >= (dram->local_size >> page_offset)) {
                 page_info.is_local = 0; // if the physical page number is larger than the local size, it is remote
@@ -870,10 +1201,18 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
         }
         else{
             // tlb access time added
-            entry->pg_info.acc_cnt_tlb ++;
+            entry->pg_info.acc_cnt_tlb++;
+            entry->pg_info.acc_cnt_tlb_period++;
+            entry->pg_info.acc_cnt_tlb_epoch++;
             // set a bit 
             entry->pg_info.a_bit = 1;
         }
+
+        ///////////////////////////////////////////////////
+        // below, we can do some state updating to simulate the behaviour of sketch and bitmap
+        ///////////////////////////////////////////////////
+
+        bitmap_state_update_epoch_by_epoch();
 
         // Trigger page hotness profiling
         // For one instruction, we just want to profile once, so we put the state updating process below
