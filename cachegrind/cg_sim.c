@@ -95,7 +95,7 @@ typedef struct page_entry {
 
 // BitMap table
 #define BITMAP_TABLE_SIZE 1024
-#define TIMESLICE 100000  // how many instructions are a timeslice stand for
+#define TIMESLICE 1000000  // how many instructions are a timeslice stand for
 
 #define CM_SKETCH_TABLE_SIZE (16*1024)
 #define CM_SKETCH_TABLE_NUM 3
@@ -116,9 +116,11 @@ typedef struct _bitmap_table{
 BITMAP_TABLE bitmap_table;
 
 
-void print_bitmap_table(){
+void print_bitmap_table(int len){
+    if (len > bitmap_table.used)
+        len = bitmap_table.used;
     VG_(printf)("start profiling the bitmap table at tik %lu, used item %lu\n", tik, bitmap_table.used);
-    for (int i = 0; i < bitmap_table.used; i++){
+    for (int i = 0; i < len; i++){
         VG_(printf)("valid: %d  ppn: %llx  access_bitmap: %llx  acc_cnt_llc_epoch: %llu\n", bitmap_table._bitmap_table[i].valid, bitmap_table._bitmap_table[i].ppn,
                                                                                           bitmap_table._bitmap_table[i].access_bitmap, bitmap_table._bitmap_table[i].acc_cnt_llc_epoch);
     }
@@ -185,6 +187,11 @@ inline void bitmap_table_delete_entry(int position){
         }
     }
     bitmap_table.used -= 1;
+
+    bitmap_table._bitmap_table[bitmap_table.used].valid = False;
+    bitmap_table._bitmap_table[bitmap_table.used].ppn = 0;
+    bitmap_table._bitmap_table[bitmap_table.used].access_bitmap = 0;
+    bitmap_table._bitmap_table[bitmap_table.used].acc_cnt_llc_epoch = 0;
 }
 
 inline void bitmap_table_insert_entry(Addr ppn, uint64_t acc_cnt_llc_epoch, int position){
@@ -198,7 +205,7 @@ inline void bitmap_table_insert_entry(Addr ppn, uint64_t acc_cnt_llc_epoch, int 
     ULong _bitmap = 1;
     for (int i = 0; i < bitmap_table.used; i++){
         if (bitmap_table._bitmap_table[i].ppn == vpage){  // this means the address is already in the table
-            _bitmap = bitmap_table._bitmap_table[i].access_bitmap;
+            _bitmap = (bitmap_table._bitmap_table[i].access_bitmap | 1);
             bitmap_table_delete_entry(i);
         }
     }
@@ -236,10 +243,6 @@ void bitmap_table_add_entry_sorted_by_cnt_epoch(Addr ppn){  // Dichotomous searc
     uint64_t acc_cnt_llc_epoch = entry->pg_info.acc_cnt_llc_epoch;
 
     if (bitmap_table.used == 0){
-        // bitmap_table._bitmap_table[bitmap_table.used].valid = True;
-        // bitmap_table._bitmap_table[bitmap_table.used].ppn = ppn;
-        // bitmap_table._bitmap_table[bitmap_table.used].access_bitmap = 1;
-        // bitmap_table._bitmap_table[bitmap_table.used].acc_cnt_llc_epoch = acc_cnt_llc_epoch;
         bitmap_table_insert_entry(ppn, acc_cnt_llc_epoch, 0);
     }
     else if (bitmap_table.used == 1){
@@ -275,7 +278,7 @@ void bitmap_table_add_entry_sorted_by_cnt_epoch(Addr ppn){  // Dichotomous searc
     
 }
 
-#define THRESHOLD 1000
+#define THRESHOLD 0
 
 typedef struct _hot_page_selector{
     uint64_t threshold;
@@ -289,7 +292,8 @@ void hot_page_selector_init(){
 
 bool select_hot_pages_iter(const void *item, void * udata){
     struct page_entry * entry = item;
-    bitmap_table_add_entry_sorted_by_cnt_epoch(entry->virt_page);
+    if (entry->pg_info.acc_cnt_llc_epoch > THRESHOLD)
+        bitmap_table_add_entry_sorted_by_cnt_epoch(entry->virt_page);
     return true;
 }
 
@@ -396,6 +400,8 @@ bool reset_acc_cnt_epoch_iter(const void *item, void * udata){
     return true;
 }
 
+int cnt_epoch = 0;
+
 void bitmap_state_update_epoch_by_epoch(){
     if (tik % EPOCH == 0){  // at the beginning of an epoch, we need to clear all the epoch counters
         epoch_state = 0;
@@ -404,7 +410,11 @@ void bitmap_state_update_epoch_by_epoch(){
     else if (tik % (EPOCH / 2) == 0){ // if in the middle of an epoch, we need to choose hot pages and put them into the bitmap tables
         epoch_state = 1;
         select_hot_pages();
-        print_bitmap_table();
+        
+        cnt_epoch += 1;
+        if (cnt_epoch % 10 == 0){
+            print_bitmap_table(10);
+        }
     }
     
     if (tik % TIMESLICE == 0 && epoch_state == 1){
