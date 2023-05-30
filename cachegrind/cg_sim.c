@@ -63,9 +63,19 @@ static const Long page_offset = 12;
 
 struct hashmap page_table;
 static ULong tik = 0;
+static int strategy = 0;
 
 static void *hashmap_get(struct hashmap *map, const void *key);
 static bool hashmap_scan(struct hashmap *map, bool (*iter)(const void *item, void *udata), void *udata);
+
+void strategy_init(int clo_strategy){
+    strategy = clo_strategy;
+}
+
+typedef struct lru_entry{
+    ULong vpage;
+    ULong cnt;
+} LRU_ENTRY;
 
 typedef struct page_info{
     ULong phys_page; // physical page id
@@ -948,10 +958,18 @@ typedef struct {
 
 typedef struct {
    Int          page_size;              /* bytes */
-   ULong         size;                   /* bytes */
-   ULong         local_size;
-   ULong         remote_size;
+   ULong        size;                   /* bytes */
+   ULong        local_size;
+   ULong        remote_size;
+   ULong        local_page_num;
+   void*        local_lru; 
+   ULong        used;
 } dram_t2;
+
+static cache_t2 LL;
+static cache_t2 I1;
+static cache_t2 D1;
+static dram_t2  DRAM;
 
 /* By this point, the size/assoc/line_size has been checked. */
 static void cachesim_initcache(cache_t config, cache_t2* c)
@@ -1159,14 +1177,44 @@ void dump_hotness_info(int n_pages){
 
 
 
+inline void DRAM_lru_update(Addr vpage){
+
+    LRU_ENTRY* lru = (LRU_ENTRY*) (DRAM.local_lru);
+
+    for (int i = 0; i < DRAM.used; i++){
+        if (lru[i].vpage == vpage){  // this means the address is already in the DRAM
+            for (int j = i; j > 0; j--)
+                lru[j] = lru[j-1];
+            lru[0].vpage = vpage;
+            lru[0].cnt = 0;
+            return;
+        }
+    }
+
+    if (DRAM.used >= DRAM.local_page_num)
+        DRAM.used = DRAM.local_page_num - 1;
+
+    for (int i = DRAM.used; i > 0; i--){
+        lru[i] = lru[i-1];
+    }
+
+    DRAM.used += 1;
+    lru[0].vpage = vpage;
+    lru[0].cnt = 0;
+    return;
+}
+
 #ifdef PAGE_PROF
 __attribute__((always_inline))
 static __inline__
-Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
+Bool cachesim_ref_page(dram_t2* dram, Addr a, Bool is_read, Bool llc_miss)
 {
 
     UWord vpage = a >> page_offset;                        // get virtual page number
     PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
+    LRU_ENTRY* lru = (LRU_ENTRY*) (DRAM.local_lru);
+
+    VG_(printf)("strategy info: %d\n", strategy);
 
     if (llc_miss){
         // before a llc_miss, there must be a tlb access
@@ -1177,10 +1225,22 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
             entry->pg_info.acc_cnt_llc++;
             entry->pg_info.acc_cnt_llc_period++;
             entry->pg_info.acc_cnt_llc_epoch++;
+            
             if (entry->pg_info.is_local)
                 n_local_page_acc_cnt++;
-            else
+            else{
                 n_remote_page_acc_cnt++;
+
+                // here we decide how to migrate
+                if (strategy == 1){
+                    // once touch remote memory, migrate them to local memory
+                    migrate_cnt++;
+                    PAGE_ENTRY * least_entry = hashmap_get(&page_table, &(lru[DRAM.used-1].vpage));
+                    least_entry->pg_info.is_local = False;
+                    entry->pg_info.is_local = True;
+                }
+            }
+            DRAM_lru_update(vpage);
         }
     }
     else{
@@ -1223,7 +1283,7 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
         // below, we can do some state updating to simulate the behaviour of sketch and bitmap
         ///////////////////////////////////////////////////
 
-        bitmap_state_update_epoch_by_epoch();
+        // bitmap_state_update_epoch_by_epoch();
 
         // Trigger page hotness profiling
         // For one instruction, we just want to profile once, so we put the state updating process below
@@ -1258,10 +1318,6 @@ Bool cachesim_ref_page(dram_t* dram, Addr a, Bool is_read, Bool llc_miss)
 #endif
 
 
-static cache_t2 LL;
-static cache_t2 I1;
-static cache_t2 D1;
-static dram_t2  DRAM;
 
 static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
 {
@@ -1278,6 +1334,12 @@ static void cachesim_initdrams(dram_t Dram)
    DRAM.remote_size = Dram.remote_size;
    DRAM.size = Dram.size;
    VG_(printf)("%lu, %lu, %lu, %lu \n", DRAM.page_size, DRAM.size, DRAM.local_size, DRAM.remote_size);
+
+   ULong local_page_num = (DRAM.local_size >> page_offset);
+
+   DRAM.local_page_num = local_page_num;
+   DRAM.local_lru = vg_malloc(local_page_num * sizeof(LRU_ENTRY));
+   DRAM.used = 0;
 
 #ifdef PAGE_PROF
    init_page_table();

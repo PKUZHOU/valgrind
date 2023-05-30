@@ -179,6 +179,44 @@ Bool VG_(str_clo_dram_opt)(const HChar *arg,
 }
 
 
+static void parse_strategy_opt ( int* strategy, const HChar* opt,
+                             const HChar* optval )
+{
+   Long i1;
+   HChar* endptr;
+
+   // Option argument looks like "1".  Extract them.
+   i1 = VG_(strtoll10)(optval, &endptr); if (*endptr != '\0') goto bad;
+
+   // Check for overflow.
+   *strategy   = (Int)i1;
+
+   // debug info
+   // VG_(printf)("strategy info: %d\n", *strategy);
+
+   return;
+
+  bad:
+   VG_(fmsg_bad_option)(opt, "Bad argument '%s'\n", optval);
+}
+
+
+Bool VG_(str_clo_strategy_opt)(const HChar *arg,
+                           int* clo_strategy)
+{
+   const HChar* tmp_str;
+
+   // debug info
+   // VG_(printf)("DEBUG POINT 1\n");
+
+   if VG_STR_CLO(arg, "--STRATEGY", tmp_str) {
+      parse_strategy_opt(clo_strategy, arg, tmp_str);
+      return True;
+   } else
+      return False;
+}
+
+
 static void umsg_cache_img(const HChar* desc, cache_t* c)
 {
    VG_(umsg)("  %s: %'d B, %d-way, %d B lines\n", desc,

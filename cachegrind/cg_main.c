@@ -1380,6 +1380,7 @@ static cache_t clo_LL_cache = UNDEFINED_CACHE;
 
 /*----DRAM configuration    ----------------------------------*/
 static dram_t clo_DRAM = UNDEFINED_DRAM;
+static int clo_strategy = 0;
 
 /*------------------------------------------------------------*/
 /*--- cg_fini() and related function                       ---*/
@@ -1763,12 +1764,14 @@ void cg_discard_superblock_info ( Addr orig_addr64, VexGuestExtents vge )
 
 static Bool cg_process_cmd_line_option(const HChar* arg)
 {
+   // VG_(printf)("DEBUG POINT 4\n");
    if (VG_(str_clo_cache_opt)(arg,
                               &clo_I1_cache,
                               &clo_D1_cache,
                               &clo_LL_cache)) {}
    else if (VG_(str_clo_dram_opt)(arg, 
                               &clo_DRAM)){}
+   else if (VG_(str_clo_strategy_opt)(arg, &clo_strategy)){}
    else if VG_STR_CLO( arg, "--cachegrind-out-file", clo_cachegrind_out_file) {}
    else if VG_BOOL_CLO(arg, "--cache-sim",  clo_cache_sim)  {}
    else if VG_BOOL_CLO(arg, "--branch-sim", clo_branch_sim) {}
@@ -1876,6 +1879,7 @@ static void cg_post_clo_init(void)
    cm_sketch_init();
    bitmap_table_refresh();
    hot_page_selector_init();
+   strategy_init(clo_strategy);
 }
 
 VG_DETERMINE_INTERFACE_VERSION(cg_pre_clo_init)
