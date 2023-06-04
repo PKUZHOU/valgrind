@@ -68,6 +68,8 @@ static int strategy = 0;
 static void *hashmap_get(struct hashmap *map, const void *key);
 static bool hashmap_scan(struct hashmap *map, bool (*iter)(const void *item, void *udata), void *udata);
 
+
+
 void strategy_init(int clo_strategy){
     strategy = clo_strategy;
 }
@@ -971,6 +973,17 @@ static cache_t2 I1;
 static cache_t2 D1;
 static dram_t2  DRAM;
 
+// #define ACCESS_MAP_TIME 1000
+// #define ACCESS_MAP_TIME_SLICE 1000
+
+// unsigned char* access_map;
+// ULong size_of_line = 0;
+
+// void acess_map_init(){
+//     access_map = (unsigned char*)VG_(malloc)("vg_malloc", ACCESS_MAP_TIME * (DRAM.size >> page_offset)*sizeof(unsigned char));
+//     size_of_line = (DRAM.size >> page_offset);
+// }
+
 /* By this point, the size/assoc/line_size has been checked. */
 static void cachesim_initcache(cache_t config, cache_t2* c)
 {
@@ -1151,9 +1164,20 @@ bool reset_acc_cnt_iter(const void *item, void * udata){
     return true;
 }
 
+bool reset_abit_iter(const void *item, void * udata){
+    struct page_entry * entry = item;
+    entry->pg_info.a_bit = False;
+    return true;
+}
+
 void reset_acc_cnt_scan(){
     // scan the page table and get modified pages
     hashmap_scan(&page_table, reset_acc_cnt_iter, NULL);
+}
+
+void reset_abit_scan(){
+    // scan the page table and get modified pages
+    hashmap_scan(&page_table, reset_abit_iter, NULL);
 }
 
 void dump_hotness_info(int n_pages){
@@ -1204,6 +1228,8 @@ inline void DRAM_lru_update(Addr vpage){
     return;
 }
 
+bool write_to_file = false;
+
 #ifdef PAGE_PROF
 __attribute__((always_inline))
 static __inline__
@@ -1214,7 +1240,7 @@ Bool cachesim_ref_page(dram_t2* dram, Addr a, Bool is_read, Bool llc_miss)
     PAGE_ENTRY * entry = hashmap_get(&page_table, &vpage); // look up in page table
     LRU_ENTRY* lru = (LRU_ENTRY*) (DRAM.local_lru);
 
-    VG_(printf)("strategy info: %d\n", strategy);
+    // VG_(printf)("strategy info: %d\n", strategy);
 
     if (llc_miss){
         // before a llc_miss, there must be a tlb access
@@ -1225,22 +1251,55 @@ Bool cachesim_ref_page(dram_t2* dram, Addr a, Bool is_read, Bool llc_miss)
             entry->pg_info.acc_cnt_llc++;
             entry->pg_info.acc_cnt_llc_period++;
             entry->pg_info.acc_cnt_llc_epoch++;
+
+            // here we update the access map
+            int time = tik / 1000;
+            VG_(printf)("%d\n", time);
+            if (time < ACCESS_MAP_TIME){
+                access_map[(tik/ACCESS_MAP_TIME_SLICE)*size_of_line+vpage] = 1;
+            }
+            else if (!write_to_file){
+                // write to file
+                for (uint64_t i = 0; i < ACCESS_MAP_TIME*size_of_line; i++)
+                    VG_(printf)("%d", access_map[i]);
+                write_to_file = True;
+            }
             
-            if (entry->pg_info.is_local)
+            if (entry->pg_info.is_local){
                 n_local_page_acc_cnt++;
+                // DRAM_lru_update(vpage);
+            }
             else{
                 n_remote_page_acc_cnt++;
 
-                // here we decide how to migrate
-                if (strategy == 1){
-                    // once touch remote memory, migrate them to local memory
-                    migrate_cnt++;
-                    PAGE_ENTRY * least_entry = hashmap_get(&page_table, &(lru[DRAM.used-1].vpage));
-                    least_entry->pg_info.is_local = False;
-                    entry->pg_info.is_local = True;
-                }
+                // // here we decide how to migrate
+                // if (strategy == 1){
+                //     // once touch remote memory, migrate them to local memory
+                //     migrate_cnt++;
+                //     PAGE_ENTRY * least_entry = hashmap_get(&page_table, &(lru[DRAM.used-1].vpage));
+                //     least_entry->pg_info.is_local = False;
+                //     entry->pg_info.is_local = True;
+                //     DRAM_lru_update(vpage);
+                // }
+                // if (strategy == 2){
+                //     // TPP reproduce
+                //     if (entry->pg_info.a_bit == True){
+                //         migrate_cnt++;
+                //         PAGE_ENTRY * least_entry = hashmap_get(&page_table, &(lru[DRAM.used-1].vpage));
+                //         least_entry->pg_info.is_local = False;
+                //         entry->pg_info.is_local = True;
+                //         entry->pg_info.a_bit = False;
+                //         DRAM_lru_update(vpage);
+                //     }
+                //     else{
+                //         entry->pg_info.a_bit = True;
+                //     }
+
+                // } 
+                // if (strategy == 3){
+
+                // }
             }
-            DRAM_lru_update(vpage);
         }
     }
     else{
@@ -1248,12 +1307,17 @@ Bool cachesim_ref_page(dram_t2* dram, Addr a, Bool is_read, Bool llc_miss)
         // so we create a new page, set its attribute and add it to the hashmap
         // when setting its attribute, we are actually doing the process of allocation (decide allocate at which place, local or remote)
         // however, this assumps that all the pages are anon pages, which is created when it is firstly accessed (is this right?)
+
+        // if(tik % 1000000 == 0){
+        //     VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
+        //     VG_(printf)("n_local_page_allocate_cnt: %lu  n_remote_page_allocate_cnt: %lu\n", n_local_page_allocate_cnt, n_remote_page_allocate_cnt);
+        //     VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
+        // }
+
+
+
         if (entry == NULL) {
-            if(n_global_page % 10000 == 0){
-                VG_(printf)("n_global_page: %lu  n_local_page: %lu  n_remote_page: %lu\n", n_global_page, n_local_page, n_remote_page);
-                VG_(printf)("n_local_page_allocate_cnt: %lu  n_remote_page_allocate_cnt: %lu\n", n_local_page_allocate_cnt, n_remote_page_allocate_cnt);
-                VG_(printf)("n_local_page_acc_cnt: %lu  n_remote_page_acc_cnt: %lu  migrate_cnt: %lu\n\n", n_local_page_acc_cnt, n_remote_page_acc_cnt, migrate_cnt);
-            }
+            
             PAGE_INFO page_info = {.acc_cnt_llc = 0, .acc_cnt_tlb = 1, .acc_cnt_llc_period = 0, .acc_cnt_tlb_period = 1, .acc_cnt_llc_epoch = 0, .acc_cnt_tlb_epoch = 1}; // create a new page info
             page_info.phys_page = n_global_page ++; // assign a physical page number using the global counter
             if (page_info.phys_page >= (dram->local_size >> page_offset)) {
@@ -1285,33 +1349,39 @@ Bool cachesim_ref_page(dram_t2* dram, Addr a, Bool is_read, Bool llc_miss)
 
         // bitmap_state_update_epoch_by_epoch();
 
+        // if ((strategy == 2) && (tik % 10000 == 0)){
+        //     reset_abit_scan();
+        // }
+
         // Trigger page hotness profiling
         // For one instruction, we just want to profile once, so we put the state updating process below
         // It means that, each time we try to access an address in memory, we will update the statement (e.g., do something, such as do profiling)
-        if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
-            profiling_start = 1;
-            VG_(printf)("Profiling start\n");
-        }
 
-        // Trigger page hotness profiling
-        if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
-            profiling_start = 1;
-            VG_(printf)("Profiling start\n");
-        }
 
-        if(profiling_start && !profiling_end){
-            // profiling page hotness periodically
-            if(tik % interval == 0){
-                a_bit_based_hotness_profiling();
-                profiled_epochs ++;
-            }
-            if(profiled_epochs == 10){
-                dump_hotness_info(n_dump_page);
-                reset_acc_cnt_scan();
-                profiled_epochs = 0;
-                profiling_end = 1;
-            }
-        }
+        // if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
+        //     profiling_start = 1;
+        //     VG_(printf)("Profiling start\n");
+        // }
+
+        // // Trigger page hotness profiling
+        // if(n_global_page > (dram->local_size >> page_offset) && (profiling_start == 0)){
+        //     profiling_start = 1;
+        //     VG_(printf)("Profiling start\n");
+        // }
+
+        // if(profiling_start && !profiling_end){
+        //     // profiling page hotness periodically
+        //     if(tik % interval == 0){
+        //         a_bit_based_hotness_profiling();
+        //         profiled_epochs ++;
+        //     }
+        //     if(profiled_epochs == 10){
+        //         dump_hotness_info(n_dump_page);
+        //         reset_acc_cnt_scan();
+        //         profiled_epochs = 0;
+        //         profiling_end = 1;
+        //     }
+        // }
     }
     return True;
 }
